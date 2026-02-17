@@ -527,7 +527,7 @@
       const dy = e.clientY - lastY;
       if (Math.abs(dx) > 2 || Math.abs(dy) > 2) didDrag = true;
       cameraTheta -= dx * 0.005;
-      cameraPhi = Math.max(0.05, Math.min(Math.PI / 2, cameraPhi - dy * 0.005));
+      cameraPhi = Math.max(0.05, Math.min(Math.PI / 2, cameraPhi + dy * 0.005));
       lastX = e.clientX; lastY = e.clientY;
     }
 
