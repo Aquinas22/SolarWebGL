@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Solar System</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; overflow: hidden; font-family: 'Times New Roman', serif; }
+    canvas { display: block; }
+
+    #hud {
+      position: fixed;
+      top: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: white;
+      font-size: 20px;
+      letter-spacing: 0.1em;
+      pointer-events: none;
+      text-shadow: 0 0 8px rgba(255,220,100,0.6);
+    }
+
+    #controls {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: rgba(255,255,255,0.45);
+      font-size: 13px;
+      letter-spacing: 0.08em;
+      pointer-events: none;
+      text-align: center;
+    }
+
+    #speed-control {
+      position: fixed;
+      top: 24px;
+      right: 28px;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 6px;
+    }
+
+    #speed-control label {
+      color: rgba(255,255,255,0.5);
+      font-size: 12px;
+      letter-spacing: 0.08em;
+    }
+
+    #speed-slider {
+      -webkit-appearance: none;
+      width: 120px;
+      height: 3px;
+      background: rgba(255,255,255,0.2);
+      border-radius: 2px;
+      outline: none;
+      cursor: pointer;
+    }
+
+    #speed-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: rgba(255, 200, 80, 0.9);
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+
+<div id="hud">Years: 0.0</div>
+<div id="controls">Left drag to rotate &nbsp;|&nbsp; Scroll to zoom</div>
+<div id="speed-control">
+  <label>TIME SCALE</label>
+  <input type="range" id="speed-slider" min="0.1" max="10" step="0.1" value="1" />
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+  // ---------------------------
+  // Scene, Camera, Renderer
+  // ---------------------------
+  const scene = new THREE.Scene();
+
+  const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+  camera.position.set(0, 10, 30);
+  camera.lookAt(0, 0, 0);
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(window.devicePixelRatio);
+  document.body.appendChild(renderer.domElement);
+
+  // ---------------------------
+  // Lighting (Sun as point light)
+  // ---------------------------
+  const sunLight = new THREE.PointLight(0xfffae0, 4.0, 300);
+  sunLight.position.set(0, 0, 0);
+  scene.add(sunLight);
+
+  // Soft ambient so dark sides aren't pitch black
+  const ambientLight = new THREE.AmbientLight(0xffffff, 0.55);
+  scene.add(ambientLight);
+
+  // ---------------------------
+  // Texture Loader
+  // ---------------------------
+  const loader = new THREE.TextureLoader();
+
+  function loadTex(path) {
+    return loader.load(path);
+  }
+
+  // ---------------------------
+  // Skybox (background cube)
+  // ---------------------------
+  const bgGeo = new THREE.BoxGeometry(500, 500, 500);
+  const bgMat = new THREE.MeshBasicMaterial({
+    map: loadTex('assets/background.jpg'),
+    side: THREE.BackSide,
+  });
+  const skybox = new THREE.Mesh(bgGeo, bgMat);
+  scene.add(skybox);
+
+  // ---------------------------
+  // Sun
+  // ---------------------------
+  const sunGeo = new THREE.SphereGeometry(1.5, 32, 32);
+  const sunMat = new THREE.MeshBasicMaterial({ map: loadTex('assets/sun.jpg') });
+  const sun = new THREE.Mesh(sunGeo, sunMat);
+  scene.add(sun);
+
+  // ---------------------------
+  // Helper: Orbit Line
+  // ---------------------------
+  function createOrbitLine(radius) {
+    const points = [];
+    const segments = 128;
+    for (let i = 0; i <= segments; i++) {
+      const theta = (i / segments) * Math.PI * 2;
+      points.push(new THREE.Vector3(Math.cos(theta) * radius, 0, Math.sin(theta) * radius));
+    }
+    const geo = new THREE.BufferGeometry().setFromPoints(points);
+    const mat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.25 });
+    return new THREE.Line(geo, mat);
+  }
+
+  // ---------------------------
+  // Helper: Saturn Ring
+  // ---------------------------
+  function createRing(innerRadius, outerRadius, texturePath) {
+    const geo = new THREE.RingGeometry(innerRadius, outerRadius, 128, 8);
+
+    // Remap UVs radially: u = angle around ring (0→1), v = position from inner to outer edge (0→1)
+    const pos = geo.attributes.position;
+    const uv  = geo.attributes.uv;
+    const v3  = new THREE.Vector3();
+    for (let i = 0; i < pos.count; i++) {
+      v3.fromBufferAttribute(pos, i);
+      const r = v3.length();
+      const t = (r - innerRadius) / (outerRadius - innerRadius); // 0 = inner, 1 = outer
+      const angle = Math.atan2(v3.y, v3.x);
+      const u = (angle / (Math.PI * 2) + 1) % 1;
+      uv.setXY(i, u, t);
+    }
+    uv.needsUpdate = true;
+
+    const mat = new THREE.MeshBasicMaterial({
+      map: loadTex(texturePath),
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+    });
+
+    return new THREE.Mesh(geo, mat);
+  }
+
+  // ---------------------------
+  // Planet Data
+  // ---------------------------
+  const planetsData = [
+    { name: 'Mercury', radius: 0.10, texture: 'assets/mercury.jpg', orbit: 2.0,  speed: 4.15,  tilt: 0.03  },
+    { name: 'Venus',   radius: 0.20, texture: 'assets/venus.jpg',   orbit: 3.0,  speed: 1.62,  tilt: 177.4 },
+    { name: 'Earth',   radius: 0.25, texture: 'assets/earth.jpg',   orbit: 4.0,  speed: 1.0,   tilt: 23.5  },
+    { name: 'Mars',    radius: 0.15, texture: 'assets/mars.jpg',    orbit: 5.0,  speed: 0.53,  tilt: 25.2  },
+    { name: 'Jupiter', radius: 0.50, texture: 'assets/jupiter.jpg', orbit: 7.0,  speed: 0.084, tilt: 3.1   },
+    { name: 'Saturn',  radius: 0.45, texture: 'assets/saturn.jpg',  orbit: 9.0,  speed: 0.034, tilt: 26.7,
+      hasRings: true, ringInner: 0.45 * 1.2, ringOuter: 0.45 * 2.0, ringTexture: 'assets/saturn.jpg' },
+    { name: 'Uranus',  radius: 0.35, texture: 'assets/uranus.jpg',  orbit: 11.0, speed: 0.011, tilt: 97.8  },
+    { name: 'Neptune', radius: 0.35, texture: 'assets/neptune.jpg', orbit: 13.0, speed: 0.006, tilt: 28.3  },
+  ];
+
+  // Build scene objects
+  const planets = planetsData.map(data => {
+    // Pivot for orbit
+    const pivot = new THREE.Object3D();
+    scene.add(pivot);
+
+    // Orbit line
+    scene.add(createOrbitLine(data.orbit));
+
+    // Planet mesh
+    const geo = new THREE.SphereGeometry(data.radius, 32, 32);
+    const mat = new THREE.MeshLambertMaterial({ map: loadTex(data.texture) });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.rotation.z = THREE.MathUtils.degToRad(data.tilt || 23.5);
+    mesh.position.x = data.orbit;
+    pivot.add(mesh);
+
+    // Rings (Saturn)
+    let ringMesh = null;
+    if (data.hasRings) {
+      ringMesh = createRing(data.ringInner, data.ringOuter, data.ringTexture);
+      ringMesh.rotation.x = Math.PI / 2;
+      mesh.add(ringMesh);
+    }
+
+    return {
+      ...data,
+      pivot,
+      mesh,
+      ringMesh,
+      orbitAngle: Math.random() * Math.PI * 2, // stagger starting positions
+      spinAngle: 0,
+      spinSpeed: 0.5,
+    };
+  });
+
+  // ---------------------------
+  // Mouse Controls (orbit camera)
+  // ---------------------------
+  let mouseDown = false;
+  let lastX = 0, lastY = 0;
+  let cameraTheta = 0;    // horizontal angle
+  let cameraPhi   = 0.35; // vertical angle (radians)
+  let cameraRadius = 30;
+
+  renderer.domElement.addEventListener('mousedown', e => {
+    mouseDown = true;
+    lastX = e.clientX;
+    lastY = e.clientY;
+  });
+  renderer.domElement.addEventListener('mouseup',   () => mouseDown = false);
+  renderer.domElement.addEventListener('mouseleave',() => mouseDown = false);
+
+  renderer.domElement.addEventListener('mousemove', e => {
+    if (!mouseDown) return;
+    const dx = e.clientX - lastX;
+    const dy = e.clientY - lastY;
+    cameraTheta -= dx * 0.005;
+    cameraPhi   = Math.max(0.05, Math.min(Math.PI / 2, cameraPhi + dy * 0.005));
+    lastX = e.clientX;
+    lastY = e.clientY;
+  });
+
+  renderer.domElement.addEventListener('wheel', e => {
+    cameraRadius += e.deltaY * 0.05;
+    cameraRadius = Math.max(5, Math.min(100, cameraRadius));
+  }, { passive: true });
+
+  // Touch support
+  let lastTouchX = 0, lastTouchY = 0;
+  renderer.domElement.addEventListener('touchstart', e => {
+    lastTouchX = e.touches[0].clientX;
+    lastTouchY = e.touches[0].clientY;
+  });
+  renderer.domElement.addEventListener('touchmove', e => {
+    const dx = e.touches[0].clientX - lastTouchX;
+    const dy = e.touches[0].clientY - lastTouchY;
+    cameraTheta -= dx * 0.005;
+    cameraPhi   = Math.max(0.05, Math.min(Math.PI / 2, cameraPhi - dy * 0.005));
+    lastTouchX = e.touches[0].clientX;
+    lastTouchY = e.touches[0].clientY;
+  });
+
+  // ---------------------------
+  // Speed Control
+  // ---------------------------
+  const speedSlider = document.getElementById('speed-slider');
+  let timeScale = 1.0;
+  speedSlider.addEventListener('input', () => { timeScale = parseFloat(speedSlider.value); });
+
+  // ---------------------------
+  // Resize
+  // ---------------------------
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  // ---------------------------
+  // Animation Loop
+  // ---------------------------
+  const hud    = document.getElementById('hud');
+  const startT = performance.now();
+  let   lastT  = performance.now();
+
+  function animate() {
+    requestAnimationFrame(animate);
+
+    const now  = performance.now();
+    const dt   = Math.min((now - lastT) / 1000, 0.05) * timeScale; // seconds, capped
+    lastT = now;
+
+    // Update earth years counter
+    const elapsed = (now - startT) / 1000;
+    const earthOrbits = elapsed * timeScale / (2 * Math.PI);
+    hud.textContent = `Years: ${earthOrbits.toFixed(1)}`;
+
+    // Rotate sun
+    sun.rotation.y += 0.003;
+
+    // Update planets
+    planets.forEach(p => {
+      p.orbitAngle += p.speed * dt;
+      p.pivot.rotation.y = p.orbitAngle;
+      p.mesh.rotation.y += 0.01 * p.spinSpeed;
+    });
+
+    // Orbit camera
+    camera.position.x = cameraRadius * Math.sin(cameraTheta) * Math.cos(cameraPhi);
+    camera.position.y = cameraRadius * Math.sin(cameraPhi);
+    camera.position.z = cameraRadius * Math.cos(cameraTheta) * Math.cos(cameraPhi);
+    camera.lookAt(0, 0, 0);
+
+    renderer.render(scene, camera);
+  }
+
+  animate();
+</script>
+</body>
+</html>
